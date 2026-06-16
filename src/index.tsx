@@ -622,16 +622,22 @@ function spinRoulette() {
 
   const winIdx = DIFFICULTIES.findIndex(d => d.key === winKey);
 
-  // ====== ポインターは「真上」に固定 ======
-  // ルーレットを回転させ、winIdx番のスライスの中央が真上（-π/2）に来るようにする
-  // スライスiの中央角度（rotation=0時）= -π/2 + i*π/2 + π/4
-  // これが-π/2に来るには: rotation = -(i*π/2 + π/4)
-  const targetRotation = -(winIdx * SLICE_ANGLE + SLICE_ANGLE / 2);
+  // ====== 停止位置の計算 ======
+  // Canvas arc() の基準: angle=0 が右(3時), 反時計は負, 時計は正
+  // ポインターは真上 = 3π/2 (270deg, ≡ -π/2)
+  // drawRoulette(r) でのスライスiの中央角:
+  //   midAngle = r + i*(π/2) - π/2 + π/4
+  //            = r + i*(π/2) - π/4
+  // 中央がポインター(3π/2)に来る条件:
+  //   r + i*(π/2) - π/4 ≡ 3π/2  (mod 2π)
+  //   r ≡ 7π/4 - i*(π/2)        (mod 2π)
+  const TWO_PI = Math.PI * 2;
+  const finalRot = ((7 * Math.PI / 4 - winIdx * SLICE_ANGLE) % TWO_PI + TWO_PI) % TWO_PI;
 
-  // ランダム追加回転（5〜8周）
-  const extraSpins = (5 + Math.random() * 3) * Math.PI * 2;
-  // 最終的な回転量（正の方向で余分に回す）
-  const totalRotation = extraSpins + (targetRotation % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+  // 必ず正方向に5〜8周してから finalRot に止まる
+  // アニメーション中は生の値(MODなし)を使うことで逆ジャンプを防ぐ
+  const extraSpins = (5 + Math.random() * 3) * TWO_PI;
+  const totalRotation = extraSpins + finalRot; // 単調増加する回転量
 
   const duration = 4000 + Math.random() * 1000;
   const startTime = performance.now();
@@ -639,13 +645,12 @@ function spinRoulette() {
   function animate(now) {
     const progress = Math.min((now - startTime) / duration, 1);
     const eased = 1 - Math.pow(1 - progress, 4);
-    const currentRot = (totalRotation * eased) % (Math.PI * 2);
-    drawRoulette(currentRot);
+    // ※ %2π を取らず生の値をそのまま渡す → Canvas arc() は大きな角度も正しく処理
+    drawRoulette(totalRotation * eased);
     if (progress < 1) {
       requestAnimationFrame(animate);
     } else {
-      // 最終位置で正確に再描画
-      const finalRot = totalRotation % (Math.PI * 2);
+      // 最終位置: finalRot で正確に止める
       drawRoulette(finalRot);
       onSpinComplete(DIFFICULTIES[winIdx]);
     }
