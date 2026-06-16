@@ -415,7 +415,7 @@ function mainPage(): string {
     <div class="roulette-section" id="roulette-section">
       <p class="hero-subtitle">Spin to Start</p>
       <h1 class="hero-title">なぞなぞ<br>ルーレット</h1>
-      <p class="hero-desc">ルーレットを回して難易度を決めよう。<br>nazogaku.comのなぞなぞをランダム出題。</p>
+      <p class="hero-desc">ルーレットを回して難易度を決めよう。<br>なぞなぞをランダム出題。</p>
 
       <div class="roulette-wrapper">
         <div class="roulette-pointer"></div>
