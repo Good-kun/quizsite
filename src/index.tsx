@@ -428,6 +428,10 @@ function mainPage(): string {
     </div>
   </section>
 
+  <!-- admax -->
+  <div style="text-align:center;margin:1rem 0;"><script src="https://adm.shinobi.jp/s/98be97d584ed13c0c382076b5688ec10"></script></div>
+  <!-- admax -->
+
   <section class="quiz-section" id="quiz-section">
     <div class="quiz-card" id="quiz-card">
       <div class="quiz-card-header">
@@ -492,6 +496,10 @@ function mainPage(): string {
         <button class="next-quiz-btn" onclick="nextQuiz()">
           <i class="fas fa-redo mr-2"></i>もう一度ルーレットを回す
         </button>
+
+        <!-- admax -->
+        <div style="text-align:center;margin-top:1.5rem;"><script src="https://adm.shinobi.jp/s/98be97d584ed13c0c382076b5688ec10"></script></div>
+        <!-- admax -->
       </div>
     </div>
   </section>
