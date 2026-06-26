@@ -504,24 +504,7 @@ function mainPage(): string {
     </div>
   </section>
 
-<script type="module">
-// ====== Firebase SDK (CDN) ======
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-import { getDatabase, ref, onValue, set } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
-
-// Firebase設定（Firebaseコンソールから取得した値に置き換えてください）
-const firebaseConfig = {
-  apiKey: "FIREBASE_API_KEY",
-  authDomain: "FIREBASE_AUTH_DOMAIN",
-  databaseURL: "FIREBASE_DATABASE_URL",
-  projectId: "FIREBASE_PROJECT_ID",
-  storageBucket: "FIREBASE_STORAGE_BUCKET",
-  messagingSenderId: "FIREBASE_MESSAGING_SENDER_ID",
-  appId: "FIREBASE_APP_ID"
-};
-const fbApp = initializeApp(firebaseConfig);
-const db = getDatabase(fbApp);
-
+<script>
 // ====== 設定読み込み ======
 const DIFFICULTIES = [
   { key: 'very-easy', label: 'やさしい',  color: '#2d6a2d', textColor: '#a3e6a3' },
@@ -530,38 +513,31 @@ const DIFFICULTIES = [
   { key: 'hard',      label: 'むずかしい',color: '#6a1a1a', textColor: '#f57070' },
 ];
 
-// 管理設定: Firebase から常に最新を参照
 let adminMode = 'random';
 let adminWeights = { 'very-easy': 1, 'easy': 1, 'normal': 1, 'hard': 1 };
 
-// Firebase からリアルタイムで設定を購読
-const settingsRef = ref(db, 'roulette_settings');
-onValue(settingsRef, (snapshot) => {
-  const data = snapshot.val();
-  if (data) {
-    adminMode = data.mode || 'random';
-    adminWeights = data.weights || { 'very-easy': 1, 'easy': 1, 'normal': 1, 'hard': 1 };
-  }
-  // URLパラメータで上書き（管理ページからの直リンク対応）
+function loadAdminSettings() {
   const params = new URLSearchParams(window.location.search);
   const urlMode = params.get('mode');
   if (urlMode && ['very-easy','easy','normal','hard'].includes(urlMode)) {
     adminMode = urlMode;
-  } else {
-    let hasUrlWeights = false;
-    const uw = {};
-    DIFFICULTIES.forEach(d => {
-      const v = parseFloat(params.get(d.key) || '0');
-      if (v > 0) { uw[d.key] = v; hasUrlWeights = true; }
-    });
-    if (hasUrlWeights) { adminWeights = uw; adminMode = 'random'; }
+    return;
   }
-});
-
-// Firebase書き込み関数（管理ページから参照できるようwindowに公開）
-window._fbSaveSettings = (mode, weights) => {
-  set(ref(db, 'roulette_settings'), { mode, weights });
-};
+  let hasUrlWeights = false;
+  const uw = {};
+  DIFFICULTIES.forEach(d => {
+    const v = parseFloat(params.get(d.key) || '0');
+    if (v > 0) { uw[d.key] = v; hasUrlWeights = true; }
+  });
+  if (hasUrlWeights) { adminWeights = uw; adminMode = 'random'; return; }
+  try {
+    const m = localStorage.getItem('roulette_mode');
+    if (m) { adminMode = m; }
+    const w = localStorage.getItem('roulette_weights');
+    if (w) adminWeights = JSON.parse(w);
+  } catch(e) {}
+}
+loadAdminSettings();
 
 // ====== ルーレット描画（常に4等分） ======
 const canvas = document.getElementById('roulette-canvas');
@@ -918,13 +894,6 @@ function nextQuiz() {
   currentQuiz = null;
 }
 
-// type="module" ではインライン onclick が使えないため window に公開
-window.spinRoulette  = spinRoulette;
-window.judgeAnswer   = judgeAnswer;
-window.retryAnswer   = retryAnswer;
-window.toggleHint    = toggleHint;
-window.toggleAnswer  = toggleAnswer;
-window.nextQuiz      = nextQuiz;
 </script>
 </body>
 </html>`
@@ -1122,24 +1091,7 @@ function adminPage(): string {
     </a>
   </div>
 
-<script type="module">
-// ====== Firebase SDK (CDN) ======
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-import { getDatabase, ref, onValue, set } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
-
-const firebaseConfig = {
-  apiKey: "FIREBASE_API_KEY",
-  authDomain: "FIREBASE_AUTH_DOMAIN",
-  databaseURL: "FIREBASE_DATABASE_URL",
-  projectId: "FIREBASE_PROJECT_ID",
-  storageBucket: "FIREBASE_STORAGE_BUCKET",
-  messagingSenderId: "FIREBASE_MESSAGING_SENDER_ID",
-  appId: "FIREBASE_APP_ID"
-};
-const fbApp = initializeApp(firebaseConfig);
-const db = getDatabase(fbApp);
-const settingsRef = ref(db, 'roulette_settings');
-
+<script>
 const DIFFICULTIES = [
   { key: 'very-easy', label: 'やさしい',  color: '#2d6a2d', textColor: '#a3e6a3' },
   { key: 'easy',      label: 'かんたん',  color: '#1a3a6a', textColor: '#7ab8f5' },
@@ -1149,36 +1101,20 @@ const DIFFICULTIES = [
 
 let currentMode = 'random';
 let weights = { 'very-easy': 1, 'easy': 1, 'normal': 1, 'hard': 1 };
-let _skipNextSync = false; // 自分の保存で再トリガーしないフラグ
 
-// Firebase からリアルタイムで現在の設定を取得してUIに反映
-onValue(settingsRef, (snapshot) => {
-  if (_skipNextSync) { _skipNextSync = false; return; }
-  const data = snapshot.val();
-  if (data) {
-    currentMode = data.mode || 'random';
-    weights = data.weights || { 'very-easy': 1, 'easy': 1, 'normal': 1, 'hard': 1 };
-    // UIに反映
-    DIFFICULTIES.forEach(d => {
-      const el = document.getElementById('w-' + d.key);
-      if (el) el.value = weights[d.key] || 1;
-    });
-    setMode(currentMode, false);
-    // 別デバイスからの変更を通知
-    const msg = document.getElementById('status-msg');
-    if (msg && msg.textContent === '') {
-      msg.textContent = '🔄 他のデバイスから設定が更新されました';
-      msg.style.color = '#7ab8f5';
-      setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 3000);
-    }
-  }
-});
-
-// グローバルに公開（onclick属性から呼べるように）
-window.setMode = setMode;
-window.updateWeights = updateWeights;
-window.applySettings = applySettings;
-window.copyLink = copyLink;
+function loadSettings() {
+  try {
+    const m = localStorage.getItem('roulette_mode');
+    if (m) { currentMode = m; }
+    const w = localStorage.getItem('roulette_weights');
+    if (w) { weights = JSON.parse(w); }
+  } catch(e) {}
+  DIFFICULTIES.forEach(d => {
+    const el = document.getElementById('w-' + d.key);
+    if (el) el.value = weights[d.key] || 1;
+  });
+  setMode(currentMode, false);
+}
 
 function setMode(mode, save = true) {
   currentMode = mode;
@@ -1278,22 +1214,13 @@ function updateShareUrl() {
   document.getElementById('go-display-link').href = url.replace(window.location.origin, '');
 }
 
-async function applySettings() {
+function applySettings() {
+  localStorage.setItem('roulette_mode', currentMode);
+  localStorage.setItem('roulette_weights', JSON.stringify(weights));
   const msg = document.getElementById('status-msg');
-  msg.textContent = '⏳ 保存中...';
-  msg.style.color = '#ffd700';
-  try {
-    // Firebase に書き込み → 全デバイスに即時反映
-    _skipNextSync = true;
-    await set(settingsRef, { mode: currentMode, weights });
-    msg.textContent = '✓ 全デバイスに設定を保存しました';
-    msg.style.color = '#64c864';
-    updateShareUrl();
-  } catch(e) {
-    msg.textContent = '⚠ 保存に失敗しました: ' + e.message;
-    msg.style.color = '#ff5050';
-  }
-  setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 4000);
+  msg.textContent = '✓ 設定を保存しました';
+  setTimeout(() => { msg.textContent = ''; }, 3000);
+  updateShareUrl();
 }
 
 function copyLink() {
@@ -1305,9 +1232,7 @@ function copyLink() {
   });
 }
 
-// 初期描画
-drawAdminRoulette();
-updateShareUrl();
+loadSettings();
 </script>
 </body>
 </html>`
