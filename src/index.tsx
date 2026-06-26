@@ -504,7 +504,24 @@ function mainPage(): string {
     </div>
   </section>
 
-<script>
+<script type="module">
+// ====== Firebase SDK (CDN) ======
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getDatabase, ref, onValue, set } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
+
+// Firebase設定（Firebaseコンソールから取得した値に置き換えてください）
+const firebaseConfig = {
+  apiKey: "FIREBASE_API_KEY",
+  authDomain: "FIREBASE_AUTH_DOMAIN",
+  databaseURL: "FIREBASE_DATABASE_URL",
+  projectId: "FIREBASE_PROJECT_ID",
+  storageBucket: "FIREBASE_STORAGE_BUCKET",
+  messagingSenderId: "FIREBASE_MESSAGING_SENDER_ID",
+  appId: "FIREBASE_APP_ID"
+};
+const fbApp = initializeApp(firebaseConfig);
+const db = getDatabase(fbApp);
+
 // ====== 設定読み込み ======
 const DIFFICULTIES = [
   { key: 'very-easy', label: 'やさしい',  color: '#2d6a2d', textColor: '#a3e6a3' },
@@ -513,35 +530,38 @@ const DIFFICULTIES = [
   { key: 'hard',      label: 'むずかしい',color: '#6a1a1a', textColor: '#f57070' },
 ];
 
-// 管理設定: mode か weights を読む
-let adminMode = 'random';      // 'very-easy'|'easy'|'normal'|'hard'|'random'
-let adminWeights = { 'very-easy': 1, 'easy': 1, 'normal': 1, 'hard': 1 }; // 比率（常に4等分描画、確率制御のみ）
+// 管理設定: Firebase から常に最新を参照
+let adminMode = 'random';
+let adminWeights = { 'very-easy': 1, 'easy': 1, 'normal': 1, 'hard': 1 };
 
-function loadAdminSettings() {
+// Firebase からリアルタイムで設定を購読
+const settingsRef = ref(db, 'roulette_settings');
+onValue(settingsRef, (snapshot) => {
+  const data = snapshot.val();
+  if (data) {
+    adminMode = data.mode || 'random';
+    adminWeights = data.weights || { 'very-easy': 1, 'easy': 1, 'normal': 1, 'hard': 1 };
+  }
+  // URLパラメータで上書き（管理ページからの直リンク対応）
   const params = new URLSearchParams(window.location.search);
   const urlMode = params.get('mode');
   if (urlMode && ['very-easy','easy','normal','hard'].includes(urlMode)) {
     adminMode = urlMode;
-    return;
+  } else {
+    let hasUrlWeights = false;
+    const uw = {};
+    DIFFICULTIES.forEach(d => {
+      const v = parseFloat(params.get(d.key) || '0');
+      if (v > 0) { uw[d.key] = v; hasUrlWeights = true; }
+    });
+    if (hasUrlWeights) { adminWeights = uw; adminMode = 'random'; }
   }
-  // URLに重みがあれば取得
-  let hasUrlWeights = false;
-  const uw = {};
-  DIFFICULTIES.forEach(d => {
-    const v = parseFloat(params.get(d.key) || '0');
-    if (v > 0) { uw[d.key] = v; hasUrlWeights = true; }
-  });
-  if (hasUrlWeights) { adminWeights = uw; adminMode = 'random'; return; }
+});
 
-  // localStorage
-  try {
-    const m = localStorage.getItem('roulette_mode');
-    if (m) { adminMode = m; }
-    const w = localStorage.getItem('roulette_weights');
-    if (w) adminWeights = JSON.parse(w);
-  } catch(e) {}
-}
-loadAdminSettings();
+// Firebase書き込み関数（管理ページから参照できるようwindowに公開）
+window._fbSaveSettings = (mode, weights) => {
+  set(ref(db, 'roulette_settings'), { mode, weights });
+};
 
 // ====== ルーレット描画（常に4等分） ======
 const canvas = document.getElementById('roulette-canvas');
@@ -631,35 +651,46 @@ function spinRoulette() {
   const winIdx = DIFFICULTIES.findIndex(d => d.key === winKey);
 
   // ====== 停止位置の計算 ======
-  // Canvas arc() の基準: angle=0 が右(3時), 反時計は負, 時計は正
-  // ポインターは真上 = 3π/2 (270deg, ≡ -π/2)
-  // drawRoulette(r) でのスライスiの中央角:
-  //   midAngle = r + i*(π/2) - π/2 + π/4
-  //            = r + i*(π/2) - π/4
-  // 中央がポインター(3π/2)に来る条件:
-  //   r + i*(π/2) - π/4 ≡ 3π/2  (mod 2π)
-  //   r ≡ 7π/4 - i*(π/2)        (mod 2π)
+  // ポインターは真上 = 3π/2 (270deg)
+  // drawRoulette(r) でのスライスiの中央角 = r + i*(π/2) - π/4
+  // 中央がポインター(3π/2)に来る条件: r ≡ 7π/4 - i*(π/2)  (mod 2π)
   const TWO_PI = Math.PI * 2;
   const finalRot = ((7 * Math.PI / 4 - winIdx * SLICE_ANGLE) % TWO_PI + TWO_PI) % TWO_PI;
 
-  // 必ず正方向に5〜8周してから finalRot に止まる
-  // アニメーション中は生の値(MODなし)を使うことで逆ジャンプを防ぐ
+  // 必ず正方向に5〜8周してから finalRot に止まる（単調増加 → 逆ジャンプなし）
   const extraSpins = (5 + Math.random() * 3) * TWO_PI;
-  const totalRotation = extraSpins + finalRot; // 単調増加する回転量
+  const totalRotation = extraSpins + finalRot;
 
-  const duration = 4000 + Math.random() * 1000;
+  // ====== 自然な慣性停止イージング ======
+  // cubic-bezier的な「勢いよく→なめらかに減速→ぴたり停止」
+  // easeOutQuint: t=1に向けて速度が5乗曲線で0に収束
+  // → progress=0.8以降も滑らかに連続して止まる（2段階ジャンプなし）
+  function easeOutQuint(t) {
+    return 1 - Math.pow(1 - t, 5);
+  }
+
+  const duration = 5000 + Math.random() * 1500; // 5〜6.5秒
   const startTime = performance.now();
+  let lastRot = 0;
 
   function animate(now) {
-    const progress = Math.min((now - startTime) / duration, 1);
-    const eased = 1 - Math.pow(1 - progress, 4);
-    // ※ %2π を取らず生の値をそのまま渡す → Canvas arc() は大きな角度も正しく処理
-    drawRoulette(totalRotation * eased);
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = easeOutQuint(progress);
+    const currentRot = totalRotation * eased;
+
+    // 単調増加を保証（逆回転防止）
+    if (currentRot >= lastRot) {
+      drawRoulette(currentRot);
+      lastRot = currentRot;
+    }
+
     if (progress < 1) {
       requestAnimationFrame(animate);
     } else {
-      // 最終位置: finalRot で正確に止める
-      drawRoulette(finalRot);
+      // アニメーション終端で eased=1 なので totalRotation が最終値
+      // finalRot = totalRotation % TWO_PI と一致するよう正確に描画
+      drawRoulette(totalRotation); // totalRotation をそのまま渡す（Canvas は大きな値OK）
       onSpinComplete(DIFFICULTIES[winIdx]);
     }
   }
@@ -886,6 +917,14 @@ function nextQuiz() {
   document.getElementById('result-label').className = 'result-label';
   currentQuiz = null;
 }
+
+// type="module" ではインライン onclick が使えないため window に公開
+window.spinRoulette  = spinRoulette;
+window.judgeAnswer   = judgeAnswer;
+window.retryAnswer   = retryAnswer;
+window.toggleHint    = toggleHint;
+window.toggleAnswer  = toggleAnswer;
+window.nextQuiz      = nextQuiz;
 </script>
 </body>
 </html>`
@@ -1083,7 +1122,24 @@ function adminPage(): string {
     </a>
   </div>
 
-<script>
+<script type="module">
+// ====== Firebase SDK (CDN) ======
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getDatabase, ref, onValue, set } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
+
+const firebaseConfig = {
+  apiKey: "FIREBASE_API_KEY",
+  authDomain: "FIREBASE_AUTH_DOMAIN",
+  databaseURL: "FIREBASE_DATABASE_URL",
+  projectId: "FIREBASE_PROJECT_ID",
+  storageBucket: "FIREBASE_STORAGE_BUCKET",
+  messagingSenderId: "FIREBASE_MESSAGING_SENDER_ID",
+  appId: "FIREBASE_APP_ID"
+};
+const fbApp = initializeApp(firebaseConfig);
+const db = getDatabase(fbApp);
+const settingsRef = ref(db, 'roulette_settings');
+
 const DIFFICULTIES = [
   { key: 'very-easy', label: 'やさしい',  color: '#2d6a2d', textColor: '#a3e6a3' },
   { key: 'easy',      label: 'かんたん',  color: '#1a3a6a', textColor: '#7ab8f5' },
@@ -1093,22 +1149,36 @@ const DIFFICULTIES = [
 
 let currentMode = 'random';
 let weights = { 'very-easy': 1, 'easy': 1, 'normal': 1, 'hard': 1 };
+let _skipNextSync = false; // 自分の保存で再トリガーしないフラグ
 
-function loadSettings() {
-  try {
-    const m = localStorage.getItem('roulette_mode');
-    if (m) { currentMode = m; }
-    const w = localStorage.getItem('roulette_weights');
-    if (w) { weights = JSON.parse(w); }
-  } catch(e) {}
+// Firebase からリアルタイムで現在の設定を取得してUIに反映
+onValue(settingsRef, (snapshot) => {
+  if (_skipNextSync) { _skipNextSync = false; return; }
+  const data = snapshot.val();
+  if (data) {
+    currentMode = data.mode || 'random';
+    weights = data.weights || { 'very-easy': 1, 'easy': 1, 'normal': 1, 'hard': 1 };
+    // UIに反映
+    DIFFICULTIES.forEach(d => {
+      const el = document.getElementById('w-' + d.key);
+      if (el) el.value = weights[d.key] || 1;
+    });
+    setMode(currentMode, false);
+    // 別デバイスからの変更を通知
+    const msg = document.getElementById('status-msg');
+    if (msg && msg.textContent === '') {
+      msg.textContent = '🔄 他のデバイスから設定が更新されました';
+      msg.style.color = '#7ab8f5';
+      setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 3000);
+    }
+  }
+});
 
-  // UIに反映
-  DIFFICULTIES.forEach(d => {
-    const el = document.getElementById('w-' + d.key);
-    if (el) el.value = weights[d.key] || 1;
-  });
-  setMode(currentMode, false);
-}
+// グローバルに公開（onclick属性から呼べるように）
+window.setMode = setMode;
+window.updateWeights = updateWeights;
+window.applySettings = applySettings;
+window.copyLink = copyLink;
 
 function setMode(mode, save = true) {
   currentMode = mode;
@@ -1118,7 +1188,6 @@ function setMode(mode, save = true) {
   const weightSection = document.getElementById('weight-section');
   weightSection.style.opacity = mode === 'random' ? '1' : '0.4';
   weightSection.style.pointerEvents = mode === 'random' ? '' : 'none';
-
   updateWeights();
   if (save) updateShareUrl();
 }
@@ -1146,7 +1215,7 @@ function updateProbDisplay() {
   }).join('　');
 }
 
-// Admin roulette (常に4等分)
+// Admin roulette プレビュー (常に4等分)
 const ac = document.getElementById('admin-roulette');
 const actx = ac.getContext('2d');
 const AW = ac.width, AH = ac.height;
@@ -1170,7 +1239,6 @@ function drawAdminRoulette() {
     actx.strokeStyle = 'rgba(255,255,255,0.1)';
     actx.lineWidth = 1;
     actx.stroke();
-
     const mid = start + ASLICE/2;
     actx.save();
     actx.translate(ACX + Math.cos(mid) * AR * 0.6, ACY + Math.sin(mid) * AR * 0.6);
@@ -1210,13 +1278,22 @@ function updateShareUrl() {
   document.getElementById('go-display-link').href = url.replace(window.location.origin, '');
 }
 
-function applySettings() {
-  localStorage.setItem('roulette_mode', currentMode);
-  localStorage.setItem('roulette_weights', JSON.stringify(weights));
+async function applySettings() {
   const msg = document.getElementById('status-msg');
-  msg.textContent = '✓ 設定を保存しました';
-  setTimeout(() => { msg.textContent = ''; }, 3000);
-  updateShareUrl();
+  msg.textContent = '⏳ 保存中...';
+  msg.style.color = '#ffd700';
+  try {
+    // Firebase に書き込み → 全デバイスに即時反映
+    _skipNextSync = true;
+    await set(settingsRef, { mode: currentMode, weights });
+    msg.textContent = '✓ 全デバイスに設定を保存しました';
+    msg.style.color = '#64c864';
+    updateShareUrl();
+  } catch(e) {
+    msg.textContent = '⚠ 保存に失敗しました: ' + e.message;
+    msg.style.color = '#ff5050';
+  }
+  setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 4000);
 }
 
 function copyLink() {
@@ -1228,7 +1305,9 @@ function copyLink() {
   });
 }
 
-loadSettings();
+// 初期描画
+drawAdminRoulette();
+updateShareUrl();
 </script>
 </body>
 </html>`
